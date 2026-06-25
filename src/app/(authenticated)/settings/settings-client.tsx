@@ -128,6 +128,7 @@ export default function SettingsPage() {
       await db.syncQueue.clear();
       
       triggerSuccess("Database cleared successfully!");
+      window.dispatchEvent(new Event("munim-db-changed"));
     } catch (err) {
       console.error("Reset database error:", err);
     } finally {
@@ -135,8 +136,8 @@ export default function SettingsPage() {
     }
   };
 
-  // Seed Default Data
-  const handleSeedMockData = async () => {
+  // Reset Categories
+  const handleResetCategories = async () => {
     setIsResetting(true);
     try {
       await db.transactions.clear();
@@ -145,7 +146,8 @@ export default function SettingsPage() {
       await db.syncQueue.clear();
 
       await seedDatabase();
-      triggerSuccess("Database re-seeded with mock ledger accounts!");
+      triggerSuccess("Standard categories initialized!");
+      window.dispatchEvent(new Event("munim-db-changed"));
     } catch (err) {
       console.error("Failed to seed database:", err);
     } finally {
@@ -241,19 +243,19 @@ export default function SettingsPage() {
               </button>
             </div>
 
-            {/* Seed Mock Data */}
+            {/* Reset Categories */}
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <p className="text-sm font-semibold text-white">Restore Seed Mock Data</p>
-                <p className="text-xs text-slate-400 mt-0.5">Wipe database and re-seed with clean default categories, parties, and historical records.</p>
+                <p className="text-sm font-semibold text-white">Reset Categories & Setup</p>
+                <p className="text-xs text-slate-400 mt-0.5">Wipe database and re-initialize with clean default transaction categories.</p>
               </div>
               <button
-                onClick={handleSeedMockData}
+                onClick={handleResetCategories}
                 disabled={isResetting}
                 className="flex items-center justify-center gap-1.5 rounded-xl border border-brand-emerald/25 bg-brand-emerald/5 px-4 py-2 text-xs font-semibold text-brand-mint hover:bg-brand-emerald/15"
               >
                 <RefreshCw size={13} className={isResetting ? "animate-spin" : ""} />
-                <span>Re-seed Database</span>
+                <span>Initialize Categories</span>
               </button>
             </div>
 

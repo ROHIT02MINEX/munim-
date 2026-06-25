@@ -19,6 +19,7 @@ import {
 import { useSync } from "@/lib/sync";
 import { seedDatabase } from "@/lib/mockData";
 import { createClient } from "@/lib/supabase/client";
+import { db } from "@/lib/db";
 
 // Define beforeinstallprompt event interface
 interface BeforeInstallPromptEvent extends Event {
@@ -41,8 +42,95 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   // 1. Initialise Database & PWA Installation Triggers
   useEffect(() => {
     setMounted(true);
-    // Seed database with mock data if empty
+    // Seed default categories first
     seedDatabase().catch((err) => console.error("Failed to seed database:", err));
+
+    // Handle authenticated user isolation & initial sync from Supabase
+    const initUserSession = async () => {
+      try {
+        const supabase = createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const cachedUserId = localStorage.getItem("munim_user_id");
+          const isNewUser = cachedUserId !== user.id;
+
+          if (isNewUser) {
+            console.log("New user detected. Clearing previous workspace data...");
+            await Promise.all([
+              db.transactions.clear(),
+              db.parties.clear(),
+              db.syncQueue.clear()
+            ]);
+          }
+
+          // Trigger sync first to push any local offline entries
+          if (navigator.onLine) {
+            try {
+              await syncNow();
+            } catch (se) {
+              console.error("Error syncing before pull:", se);
+            }
+          }
+
+          // Sync down user's existing records from Supabase tables
+          const [txRes, ptRes] = await Promise.all([
+            supabase.from("transactions").select("*"),
+            supabase.from("parties").select("*")
+          ]);
+
+          // Save unsynced local data first to prevent overwriting
+          const unsyncedTxs = await db.transactions.filter(t => t.status !== "synced").toArray();
+          const unsyncedPts = await db.parties.filter(p => p.status !== "synced").toArray();
+
+          // Clear database to merge fresh data
+          await Promise.all([
+            db.transactions.clear(),
+            db.parties.clear()
+          ]);
+
+          // Reseed default categories
+          await seedDatabase();
+
+          // Put synced transactions from Supabase
+          if (txRes.data && txRes.data.length > 0) {
+            const localTxs = txRes.data.map(item => ({
+              id: item.id,
+              ...(item.payload as any),
+              status: "synced" as const
+            }));
+            await db.transactions.bulkPut(localTxs);
+          }
+
+          // Put synced parties from Supabase
+          if (ptRes.data && ptRes.data.length > 0) {
+            const localPts = ptRes.data.map(item => ({
+              id: item.id,
+              ...(item.payload as any),
+              status: "synced" as const
+            }));
+            await db.parties.bulkPut(localPts);
+          }
+
+          // Re-apply local unsynced edits/inserts
+          if (unsyncedTxs.length > 0) {
+            await db.transactions.bulkPut(unsyncedTxs);
+          }
+          if (unsyncedPts.length > 0) {
+            await db.parties.bulkPut(unsyncedPts);
+          }
+
+          localStorage.setItem("munim_user_id", user.id);
+          console.log("Workspace initialized/synchronized successfully.");
+
+          // Dispatch event to trigger state updates in components
+          window.dispatchEvent(new Event("munim-db-changed"));
+        }
+      } catch (err) {
+        console.error("Failed to initialize user session:", err);
+      }
+    };
+
+    initUserSession();
 
     // Listen for PWA install prompt
     const handleInstallPrompt = (e: Event) => {
@@ -71,7 +159,7 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
       window.removeEventListener("beforeinstallprompt", handleInstallPrompt);
       window.removeEventListener("appinstalled", handleAppInstalled);
     };
-  }, []);
+  }, [router]);
 
   const handleInstallClick = async () => {
     if (!deferredPrompt) return;
@@ -87,6 +175,13 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
   const handleLogout = async () => {
     const supabase = createClient();
     await supabase.auth.signOut();
+    localStorage.removeItem("munim_user_id");
+    // Purge local database to enforce Row Level Security isolation offline
+    await Promise.all([
+      db.transactions.clear(),
+      db.parties.clear(),
+      db.syncQueue.clear()
+    ]);
     router.refresh();
     router.push("/login");
   };

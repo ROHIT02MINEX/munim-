@@ -2,6 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { db, type Party, type Transaction } from "./db";
+import { createClient } from "@/lib/supabase/client";
 
 type SyncPayload = Transaction | Party | null;
 
@@ -43,6 +44,14 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
     console.log(`Starting sync of ${count} pending operations...`);
 
     try {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.warn("User is not authenticated. Skipping database sync.");
+        setIsSyncing(false);
+        return;
+      }
+
       const queueItems = await db.syncQueue.orderBy("timestamp").toArray();
 
       for (const item of queueItems) {
@@ -51,17 +60,49 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
           break;
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 800));
-        console.log(`Successfully synced ${item.entity} [${item.action}] ID: ${item.entityId}`);
+        const tableName = item.entity === "transaction" ? "transactions" : "parties";
+        let syncSuccess = false;
 
-        if (item.entity === "transaction" && item.action !== "delete") {
-          await db.transactions.update(item.entityId, { status: "synced" });
-        } else if (item.entity === "party" && item.action !== "delete") {
-          await db.parties.update(item.entityId, { status: "synced" });
+        try {
+          if (item.action === "insert") {
+            const { error } = await supabase.from(tableName).insert({
+              id: item.entityId,
+              user_id: user.id,
+              payload: item.payload as any
+            });
+            if (!error) syncSuccess = true;
+            else console.error(`Failed to sync insert for ${item.entityId}:`, error);
+          } else if (item.action === "update") {
+            const { error } = await supabase.from(tableName).update({
+              payload: item.payload as any
+            }).eq("id", item.entityId).eq("user_id", user.id);
+            if (!error) syncSuccess = true;
+            else console.error(`Failed to sync update for ${item.entityId}:`, error);
+          } else if (item.action === "delete") {
+            const { error } = await supabase.from(tableName).delete().eq("id", item.entityId).eq("user_id", user.id);
+            if (!error) syncSuccess = true;
+            else console.error(`Failed to sync delete for ${item.entityId}:`, error);
+          }
+        } catch (innerErr) {
+          console.error(`Sync error on queue item ${item.entityId}:`, innerErr);
         }
 
-        if (item.id !== undefined) {
-          await db.syncQueue.delete(item.id);
+        if (syncSuccess) {
+          console.log(`Successfully synced ${item.entity} [${item.action}] ID: ${item.entityId}`);
+
+          if (item.entity === "transaction" && item.action !== "delete") {
+            await db.transactions.update(item.entityId, { status: "synced" });
+          } else if (item.entity === "party" && item.action !== "delete") {
+            await db.parties.update(item.entityId, { status: "synced" });
+          }
+
+          if (item.id !== undefined) {
+            await db.syncQueue.delete(item.id);
+          }
+        } else {
+          // If a sync fails, we pause the sync loop to avoid blocking queue
+          console.warn(`Sync failed for queue item ID ${item.entityId}. Will retry later.`);
+          break;
         }
 
         await updatePendingCount();

@@ -34,6 +34,7 @@ export default function PartiesPage() {
 
   // Modal States
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ isOpen: boolean; partyId: string }>({ isOpen: false, partyId: "" });
 
   // Form States
   const [formName, setFormName] = useState("");
@@ -57,6 +58,8 @@ export default function PartiesPage() {
 
   useEffect(() => {
     loadData();
+    window.addEventListener("munim-db-changed", loadData);
+    return () => window.removeEventListener("munim-db-changed", loadData);
   }, []);
 
   // Handle Add Party
@@ -114,16 +117,19 @@ export default function PartiesPage() {
       setIsAddModalOpen(false);
       
       loadData();
+      window.dispatchEvent(new Event("munim-db-changed"));
     } catch (err) {
       console.error("Failed to add party:", err);
     }
   };
 
   // Delete Party
-  const handleDeleteParty = async (id: string, e: React.MouseEvent) => {
+  const handleDeleteParty = (id: string, e: React.MouseEvent) => {
     e.stopPropagation(); // Avoid opening detailed ledger
-    if (!confirm("Are you sure you want to delete this party? All historical records remain, but linked name will be removed from directory.")) return;
+    setDeleteConfirm({ isOpen: true, partyId: id });
+  };
 
+  const executeDeleteParty = async (id: string) => {
     try {
       await db.parties.delete(id);
       await queueAction("delete", "party", id, null);
@@ -131,8 +137,10 @@ export default function PartiesPage() {
         setSelectedParty(null);
       }
       loadData();
+      window.dispatchEvent(new Event("munim-db-changed"));
     } catch (err) {
       console.error("Failed to delete party:", err);
+      alert("Failed to delete party.");
     }
   };
 
@@ -273,10 +281,17 @@ export default function PartiesPage() {
                     <div key={n} className="h-14 w-full animate-pulse rounded bg-slate-900/50"></div>
                   ))}
                 </div>
-              ) : filteredParties.length === 0 ? (
-                <div className="p-12 text-center">
-                  <p className="text-sm text-slate-500">No contacts found in your database.</p>
-                </div>
+          ) : parties.length === 0 ? (
+            <div className="p-12 text-center">
+              <p className="text-sm font-semibold text-slate-300">No Parties Yet.</p>
+              <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+                Keep track of your clients, suppliers, or other relationships. Click &quot;Create Contact&quot; to begin.
+              </p>
+            </div>
+          ) : filteredParties.length === 0 ? (
+            <div className="p-12 text-center">
+              <p className="text-sm text-slate-500">No matching contacts found in your database.</p>
+            </div>
               ) : (
                 <div className="divide-y divide-brand-border">
                   {filteredParties.map((party) => {
@@ -567,6 +582,36 @@ export default function PartiesPage() {
 
               </form>
 
+            </div>
+          </div>
+        )}
+
+        {/* Simplified Deletion Modal */}
+        {deleteConfirm.isOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+            <div className="relative w-full max-w-sm rounded-2xl border border-brand-border bg-brand-card p-6 shadow-2xl backdrop-blur-xl animate-float">
+              <h3 className="font-display text-lg font-bold text-white">Delete Party?</h3>
+              <p className="mt-2 text-xs text-slate-400">This action cannot be undone.</p>
+              <div className="mt-6 flex justify-end gap-3 border-t border-brand-border pt-4">
+                <button
+                  type="button"
+                  onClick={() => setDeleteConfirm({ isOpen: false, partyId: "" })}
+                  className="rounded-xl border border-slate-800 px-4 py-2.5 text-xs font-semibold text-slate-300 hover:bg-slate-900 hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const id = deleteConfirm.partyId;
+                    setDeleteConfirm({ isOpen: false, partyId: "" });
+                    await executeDeleteParty(id);
+                  }}
+                  className="rounded-xl bg-brand-rose px-5 py-2.5 text-xs font-semibold text-white shadow hover:opacity-90 active:scale-95"
+                >
+                  Delete
+                </button>
+              </div>
             </div>
           </div>
         )}

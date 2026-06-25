@@ -3,7 +3,7 @@ import Dexie, { type Table } from "dexie";
 export interface Transaction {
   id: string;
   amount: number;
-  type: "income" | "expense";
+  type: "income" | "expense" | "transfer";
   category: string;
   partyId?: string;
   date: string;

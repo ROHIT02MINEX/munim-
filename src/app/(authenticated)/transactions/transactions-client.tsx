@@ -26,16 +26,17 @@ export default function TransactionsPage() {
 
   // Filter States
   const [searchTerm, setSearchTerm] = useState("");
-  const [typeFilter, setTypeFilter] = useState<"all" | "income" | "expense">("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | "income" | "expense" | "transfer">("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
 
   // Modal States
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTx, setEditingTx] = useState<Transaction | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ isOpen: boolean; txId: string }>({ isOpen: false, txId: "" });
 
   // Form States
   const [formAmount, setFormAmount] = useState("");
-  const [formType, setFormType] = useState<"income" | "expense">("income");
+  const [formType, setFormType] = useState<"income" | "expense" | "transfer">("income");
   const [formCategory, setFormCategory] = useState("");
   const [formPartyId, setFormPartyId] = useState("");
   const [formDate, setFormDate] = useState("");
@@ -61,6 +62,8 @@ export default function TransactionsPage() {
 
   useEffect(() => {
     loadData();
+    window.addEventListener("munim-db-changed", loadData);
+    return () => window.removeEventListener("munim-db-changed", loadData);
   }, []);
 
   // Handle Form Modal Open
@@ -194,6 +197,7 @@ export default function TransactionsPage() {
 
       setIsModalOpen(false);
       loadData();
+      window.dispatchEvent(new Event("munim-db-changed"));
     } catch (err) {
       console.error("Failed to save transaction:", err);
       alert("Error saving transaction, check database size.");
@@ -201,9 +205,11 @@ export default function TransactionsPage() {
   };
 
   // Delete Transaction
-  const handleDelete = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this ledger entry?")) return;
+  const handleDelete = (id: string) => {
+    setDeleteConfirm({ isOpen: true, txId: id });
+  };
 
+  const executeDelete = async (id: string) => {
     try {
       const tx = await db.transactions.get(id);
       if (tx) {
@@ -222,9 +228,11 @@ export default function TransactionsPage() {
         await queueAction("delete", "transaction", id, null);
         
         loadData();
+        window.dispatchEvent(new Event("munim-db-changed"));
       }
     } catch (err) {
       console.error("Failed to delete transaction:", err);
+      alert("Failed to delete transaction.");
     }
   };
 
@@ -296,12 +304,13 @@ export default function TransactionsPage() {
               </span>
               <select
                 value={typeFilter}
-                onChange={(e) => setTypeFilter(e.target.value as "all" | "income" | "expense")}
+                onChange={(e) => setTypeFilter(e.target.value as "all" | "income" | "expense" | "transfer")}
                 className="block w-full rounded-xl border border-brand-border bg-slate-900/60 py-2.5 pl-9 pr-4 text-xs text-white outline-none focus:border-brand-emerald"
               >
-                <option value="all">All Flows (In/Out)</option>
+                <option value="all">All Flows (In/Out/Transfer)</option>
                 <option value="income">Inflow (Income)</option>
                 <option value="expense">Outflow (Expense)</option>
+                <option value="transfer">Internal Transfer</option>
               </select>
             </div>
 
@@ -329,6 +338,16 @@ export default function TransactionsPage() {
               {[1, 2, 3, 4].map((n) => (
                 <div key={n} className="h-12 w-full animate-pulse rounded bg-slate-900/50"></div>
               ))}
+            </div>
+          ) : transactions.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="rounded-full bg-slate-900/50 p-4 border border-brand-border mb-3">
+                <Filter size={24} className="text-slate-500" />
+              </div>
+              <p className="text-sm font-semibold text-slate-300">No transactions yet.</p>
+              <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+                Start by adding your first income or expense. Use the + button or voice assistant to record an entry.
+              </p>
             </div>
           ) : filteredTxs.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
@@ -400,8 +419,8 @@ export default function TransactionsPage() {
                             <span className="text-slate-600 text-xs">-</span>
                           )}
                         </td>
-                        <td className={`p-4 text-right font-bold whitespace-nowrap ${isInc ? "text-brand-mint" : "text-brand-rose"}`}>
-                          {isInc ? "+" : "-"} {formatCurrency(tx.amount)}
+                        <td className={`p-4 text-right font-bold whitespace-nowrap ${isInc ? "text-brand-mint" : tx.type === "transfer" ? "text-blue-400" : "text-brand-rose"}`}>
+                          {tx.type === "transfer" ? "" : isInc ? "+" : "-"} {formatCurrency(tx.amount)}
                         </td>
                         <td className="p-4">
                           <div className="flex items-center justify-center gap-2">
@@ -439,8 +458,8 @@ export default function TransactionsPage() {
                           <p className="font-semibold text-white">{party ? party.name : "Cash Account"}</p>
                           <p className="text-[10px] text-slate-500 font-mono">{tx.date}</p>
                         </div>
-                        <p className={`text-sm font-bold ${isInc ? "text-brand-mint" : "text-brand-rose"}`}>
-                          {isInc ? "+" : "-"} {formatCurrency(tx.amount)}
+                        <p className={`text-sm font-bold ${isInc ? "text-brand-mint" : tx.type === "transfer" ? "text-blue-400" : "text-brand-rose"}`}>
+                          {tx.type === "transfer" ? "" : isInc ? "+" : "-"} {formatCurrency(tx.amount)}
                         </p>
                       </div>
                       
@@ -582,7 +601,7 @@ export default function TransactionsPage() {
                       className="mt-1.5 block w-full rounded-xl border border-brand-border bg-slate-900/60 py-2.5 px-3 text-xs text-white outline-none focus:border-brand-emerald"
                     >
                       {categories
-                        .filter((c) => c.type === formType)
+                        .filter((c) => formType === "transfer" || c.type === formType)
                         .map((c) => (
                           <option key={c.id} value={c.name}>{c.name}</option>
                         ))}
@@ -673,6 +692,36 @@ export default function TransactionsPage() {
                 </div>
               </form>
 
+            </div>
+          </div>
+        )}
+
+        {/* Simplified Deletion Modal */}
+        {deleteConfirm.isOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+            <div className="relative w-full max-w-sm rounded-2xl border border-brand-border bg-brand-card p-6 shadow-2xl backdrop-blur-xl animate-float">
+              <h3 className="font-display text-lg font-bold text-white">Delete Transaction?</h3>
+              <p className="mt-2 text-xs text-slate-400">This action cannot be undone.</p>
+              <div className="mt-6 flex justify-end gap-3 border-t border-brand-border pt-4">
+                <button
+                  type="button"
+                  onClick={() => setDeleteConfirm({ isOpen: false, txId: "" })}
+                  className="rounded-xl border border-slate-800 px-4 py-2.5 text-xs font-semibold text-slate-300 hover:bg-slate-900 hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const id = deleteConfirm.txId;
+                    setDeleteConfirm({ isOpen: false, txId: "" });
+                    await executeDelete(id);
+                  }}
+                  className="rounded-xl bg-brand-rose px-5 py-2.5 text-xs font-semibold text-white shadow hover:opacity-90 active:scale-95"
+                >
+                  Delete
+                </button>
+              </div>
             </div>
           </div>
         )}

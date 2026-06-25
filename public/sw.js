@@ -47,7 +47,11 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
   // Skip browser dev tools or hot-reloading extensions in Next.js development
-  if (url.pathname.includes("_next/webpack-hmr") || url.pathname.includes("hot-update")) {
+  if (
+    url.pathname.includes("_next/webpack-hmr") ||
+    url.pathname.includes("hot-update") ||
+    url.pathname.startsWith("/auth/")
+  ) {
     return;
   }
 

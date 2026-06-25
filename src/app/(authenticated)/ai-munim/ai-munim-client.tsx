@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { db, type Transaction, type Party } from "@/lib/db";
+import { db, type Transaction, type Party, type Category } from "@/lib/db";
 import { useSync } from "@/lib/sync";
 import { 
   Bot, 
@@ -61,6 +61,7 @@ export default function AiMunimPage() {
 
   // Shared Data States
   const [parties, setParties] = useState<Party[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
 
   // 1. Voice Entry States
   const [isListening, setIsListening] = useState(false);
@@ -68,13 +69,22 @@ export default function AiMunimPage() {
   const [recognition, setRecognition] = useState<SpeechRecognition | null>(null);
   const [parsedTx, setParsedTx] = useState<{
     amount: number;
-    type: "income" | "expense";
+    type: "income" | "expense" | "transfer";
     category: string;
     partyId?: string;
     partyName?: string;
     description: string;
   } | null>(null);
   const [voiceError, setVoiceError] = useState("");
+
+  // Editable confirmation states
+  const [editType, setEditType] = useState<"income" | "expense" | "transfer">("income");
+  const [editAmount, setEditAmount] = useState("");
+  const [editPartyName, setEditPartyName] = useState("");
+  const [editCategory, setEditCategory] = useState("");
+  const [editDate, setEditDate] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [confidenceScore, setConfidenceScore] = useState(100);
 
   // 2. Chat States
   const [chatInput, setChatInput] = useState("");
@@ -96,6 +106,8 @@ export default function AiMunimPage() {
   const loadData = async () => {
     const pts = await db.parties.toArray();
     setParties(pts);
+    const cats = await db.categories.toArray();
+    setCategories(cats);
   };
 
   useEffect(() => {
@@ -117,80 +129,137 @@ export default function AiMunimPage() {
     }
   };
 
-  // Local Offline NLP Command Parser (Supports English and Hinglish patterns)
+  // Local Offline NLP Command Parser
   const parseVoiceCommand = useCallback((text: string) => {
+    if (!text.trim()) return;
     const cleanText = text.toLowerCase().trim();
     
-    // 1. Extract amount (looks for numbers like 10000, 500, etc.)
+    // Keywords definition
+    const INCOME_KEYWORDS = ["receive", "received", "got", "credited", "earned", "income", "deposit", "collected", "by"];
+    const EXPENSE_KEYWORDS = ["paid", "payment", "given", "gave", "sent", "done", "debited", "spent", "purchase", "bought"];
+    const TRANSFER_KEYWORDS = ["transfer", "transferred", "moved", "bank transfer", "wallet transfer", "upi transfer"];
+
+    // 1. Extract amount
     const amountMatch = cleanText.match(/\b\d+(?:,\d+)*(?:\.\d+)?\b/);
-    if (!amountMatch) {
-      setVoiceError("Could not identify any currency amount. Try: 'Paid 5000 for rent'");
-      return;
+    let amount = 0;
+    if (amountMatch) {
+      amount = parseFloat(amountMatch[0].replace(/,/g, ""));
     }
-    const amount = parseFloat(amountMatch[0].replace(/,/g, ""));
 
-    // 2. Identify flow type (income vs expense)
-    let type: "income" | "expense" = "expense"; // default
-    if (
-      cleanText.includes("received") || 
-      cleanText.includes("mile") || 
-      cleanText.includes("mila") || 
-      cleanText.includes("came") || 
-      cleanText.includes("earn") ||
-      cleanText.includes("credit") ||
-      cleanText.includes("deposit")
-    ) {
-      type = "income";
-    } else if (
-      cleanText.includes("paid") ||
-      cleanText.includes("diye") ||
-      cleanText.includes("diya") ||
-      cleanText.includes("expense") ||
-      cleanText.includes("bought") ||
-      cleanText.includes("spent") ||
-      cleanText.includes("purchase")
-    ) {
+    // 2. Identify flow type
+    let type: "income" | "expense" | "transfer" = "income";
+    let typeDetected = false;
+
+    const hasTransfer = TRANSFER_KEYWORDS.some(kw => cleanText.includes(kw));
+    const hasExpense = EXPENSE_KEYWORDS.some(kw => cleanText.includes(kw));
+    const hasIncome = INCOME_KEYWORDS.some(kw => cleanText.includes(kw));
+
+    if (hasTransfer) {
+      type = "transfer";
+      typeDetected = true;
+    } else if (hasExpense) {
       type = "expense";
+      typeDetected = true;
+    } else if (hasIncome) {
+      type = "income";
+      typeDetected = true;
+    } else {
+      type = "income";
+      typeDetected = false;
     }
 
-    // 3. Identify Category
-    let category = type === "income" ? "Sales" : "Purchase"; // default
-    if (cleanText.includes("rent")) {
-      category = "Rent";
-    } else if (cleanText.includes("salary") || cleanText.includes("salary paid")) {
-      category = "Salary";
-    } else if (cleanText.includes("electricity") || cleanText.includes("internet") || cleanText.includes("bill") || cleanText.includes("utilities")) {
-      category = "Utilities";
-    } else if (cleanText.includes("travel") || cleanText.includes("taxi") || cleanText.includes("petrol") || cleanText.includes("cab")) {
-      category = "Travel";
-    } else if (cleanText.includes("marketing") || cleanText.includes("ad") || cleanText.includes("facebook") || cleanText.includes("promotion")) {
-      category = "Marketing";
-    } else if (cleanText.includes("office") || cleanText.includes("stationery") || cleanText.includes("paper")) {
-      category = "Office Supplies";
-    } else if (cleanText.includes("service") || cleanText.includes("consultancy")) {
-      category = "Services";
-    }
-
-    // 4. Identify linked Party from contacts list
-    let matchedParty: Party | undefined;
+    // 3. Identify linked Party
+    let matchedPartyName = "";
+    let matchedPartyId = "";
+    
     for (const p of parties) {
-      if (cleanText.includes(p.name.toLowerCase())) {
-        matchedParty = p;
+      const pNameLower = p.name.toLowerCase();
+      if (cleanText.includes(pNameLower)) {
+        matchedPartyName = p.name;
+        matchedPartyId = p.id;
         break;
       }
     }
+
+    if (!matchedPartyName) {
+      const prepositionMatch = cleanText.match(/(?:from|to|by|given to|sent to|paid to|done to)\s+([a-z\s]+)/i);
+      if (prepositionMatch) {
+        let candidate = prepositionMatch[1].trim();
+        candidate = candidate.split(/\b(?:for|on|in|at|using|via|with|payment|electricity|salary|rent|bill|petrol|bought|received|paid)\b/)[0].trim();
+        if (candidate && candidate.length > 1 && candidate.length < 25) {
+          matchedPartyName = candidate.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+        }
+      }
+      
+      if (!matchedPartyName) {
+        const paidMeMatch = cleanText.match(/\b([a-z\s]+)\s+(?:paid|paid me)\b/i);
+        if (paidMeMatch) {
+          let candidate = paidMeMatch[1].trim();
+          candidate = candidate.split(/\b(?:received|got|sent|given)\b/)[0].trim();
+          if (candidate && candidate.length > 1 && candidate.length < 25) {
+            matchedPartyName = candidate.split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+          }
+        }
+      }
+
+      if (cleanText.includes("cash")) {
+        matchedPartyName = "Cash";
+      }
+    }
+
+    // 4. Identify Category
+    let category = type === "income" ? "Sales" : type === "transfer" ? "Transfer" : "Purchase";
+    if (cleanText.includes("salary")) {
+      category = "Salary";
+    } else if (cleanText.includes("petrol") || cleanText.includes("fuel") || cleanText.includes("diesel")) {
+      category = "Fuel";
+    } else if (cleanText.includes("electricity") || cleanText.includes("utility") || cleanText.includes("bill") || cleanText.includes("power") || cleanText.includes("light")) {
+      category = "Utilities";
+    } else if (cleanText.includes("food") || cleanText.includes("restaurant") || cleanText.includes("dinner") || cleanText.includes("lunch") || cleanText.includes("eating") || cleanText.includes("swiggy") || cleanText.includes("zomato")) {
+      category = "Food";
+    } else if (cleanText.includes("rent") || cleanText.includes("room") || cleanText.includes("lease")) {
+      category = "Rent";
+    } else if (cleanText.includes("shopping") || cleanText.includes("clothes") || cleanText.includes("dress") || cleanText.includes("amazon") || cleanText.includes("myntra")) {
+      category = "Shopping";
+    } else if (cleanText.includes("medicine") || cleanText.includes("healthcare") || cleanText.includes("health") || cleanText.includes("doctor") || cleanText.includes("hospital") || cleanText.includes("clinic")) {
+      category = "Healthcare";
+    } else if (cleanText.includes("recharge") || cleanText.includes("mobile") || cleanText.includes("phone") || cleanText.includes("jio") || cleanText.includes("airtel")) {
+      category = "Mobile";
+    } else if (cleanText.includes("internet") || cleanText.includes("wifi") || cleanText.includes("broadband") || cleanText.includes("fiber")) {
+      category = "Internet";
+    } else if (cleanText.includes("travel") || cleanText.includes("taxi") || cleanText.includes("cab") || cleanText.includes("ola") || cleanText.includes("uber") || cleanText.includes("bus") || cleanText.includes("train") || cleanText.includes("flight")) {
+      category = "Travel";
+    } else {
+      category = "Miscellaneous";
+    }
+
+    // 5. Calculate Confidence Score
+    let score = 100;
+    if (!amountMatch) score -= 40;
+    if (!typeDetected) score -= 30;
+    if (!matchedPartyName) score -= 15;
+    if (cleanText.split(/\s+/).length < 3) score -= 15;
+    score = Math.max(10, score);
+
+    setConfidenceScore(score);
+    setEditAmount(amount ? amount.toString() : "");
+    setEditType(type);
+    setEditPartyName(matchedPartyName || "Cash Account");
+    setEditCategory(category);
+    setEditDate(new Date().toISOString().split("T")[0]);
+    setEditNotes(`Voice parsed entry from: "${text}"`);
 
     setParsedTx({
       amount,
       type,
       category,
-      partyId: matchedParty?.id,
-      partyName: matchedParty ? matchedParty.name : "Cash Account",
+      partyId: matchedPartyId || undefined,
+      partyName: matchedPartyName || "Cash Account",
       description: `Voice Entry: "${text}"`
     });
   }, [parties]);
 
-  // Setup Web Speech Recognition
+  // Setup Web Speech Recognition with interim updates and silence auto-stop
   useEffect(() => {
     if (typeof window !== "undefined") {
       const speechWindow = window as SpeechRecognitionWindow;
@@ -200,8 +269,10 @@ export default function AiMunimPage() {
       if (SpeechRecognitionConstructor) {
         const rec = new SpeechRecognitionConstructor() as SpeechRecognition;
         rec.continuous = false;
-        rec.interimResults = false;
-        rec.lang = "en-IN"; // English (India) works great for bilingual Hinglish inputs too
+        rec.interimResults = true;
+        rec.lang = "en-IN";
+
+        let silenceTimeout: NodeJS.Timeout;
 
         rec.onstart = () => {
           setIsListening(true);
@@ -209,9 +280,31 @@ export default function AiMunimPage() {
         };
 
         rec.onresult = (e: SpeechRecognitionEvent) => {
-          const transcript = e.results[0][0].transcript;
-          setVoiceText(transcript);
-          parseVoiceCommand(transcript);
+          clearTimeout(silenceTimeout);
+
+          let interimTranscript = "";
+          let finalTranscript = "";
+          for (let i = e.resultIndex; i < e.results.length; ++i) {
+            if (e.results[i].isFinal) {
+              finalTranscript += e.results[i][0].transcript;
+            } else {
+              interimTranscript += e.results[i][0].transcript;
+            }
+          }
+
+          const transcript = finalTranscript || interimTranscript;
+          if (transcript) {
+            setVoiceText(transcript);
+          }
+
+          if (finalTranscript) {
+            parseVoiceCommand(finalTranscript);
+          }
+
+          // Stop listening after 2 seconds of silence
+          silenceTimeout = setTimeout(() => {
+            rec.stop();
+          }, 2000);
         };
 
         rec.onerror = (e: Event) => {
@@ -222,6 +315,7 @@ export default function AiMunimPage() {
 
         rec.onend = () => {
           setIsListening(false);
+          clearTimeout(silenceTimeout);
         };
 
         setRecognition(rec);
@@ -230,39 +324,65 @@ export default function AiMunimPage() {
   }, [parseVoiceCommand]);
 
   const handleConfirmVoiceTx = async () => {
-    if (!parsedTx) return;
+    if (!editAmount) {
+      alert("Please enter a valid amount.");
+      return;
+    }
 
     try {
+      const amountVal = parseFloat(editAmount) || 0;
+      let finalPartyId = parsedTx?.partyId;
+
+      // Smart Party Detection: Create new party if typed one doesn't exist
+      if (editPartyName.trim() && editPartyName !== "Cash Account" && editPartyName !== "Cash") {
+        const existing = parties.find(p => p.name.toLowerCase() === editPartyName.toLowerCase().trim());
+        if (existing) {
+          finalPartyId = existing.id;
+        } else {
+          const newPartyId = "p_auto_" + Date.now();
+          const newParty: Party = {
+            id: newPartyId,
+            name: editPartyName.trim(),
+            type: editType === "income" ? "customer" : "vendor",
+            balance: 0,
+            status: "pending-insert"
+          };
+          await db.parties.add(newParty);
+          await queueAction("insert", "party", newPartyId, newParty);
+          finalPartyId = newPartyId;
+        }
+      }
+
+      // Add Transaction
       const txId = "tx_ai_" + Date.now();
       const newTx: Transaction = {
         id: txId,
-        amount: parsedTx.amount,
-        type: parsedTx.type,
-        category: parsedTx.category,
-        partyId: parsedTx.partyId,
-        date: new Date().toISOString().split("T")[0],
-        description: parsedTx.description,
+        amount: amountVal,
+        type: editType,
+        category: editCategory,
+        partyId: finalPartyId || undefined,
+        date: editDate || new Date().toISOString().split("T")[0],
+        description: editNotes || `Voice Entry: "${voiceText}"`,
         status: "pending-insert",
         createdAt: Date.now()
       };
 
-      // 1. Add Transaction
       await db.transactions.add(newTx);
       await queueAction("insert", "transaction", txId, newTx);
 
-      // 2. Adjust linked party balance
-      if (parsedTx.partyId) {
-        const party = await db.parties.get(parsedTx.partyId);
+      // Adjust linked party balance (Expense increases, Income decreases)
+      if (finalPartyId) {
+        const party = await db.parties.get(finalPartyId);
         if (party) {
-          const newBalance = party.balance + (parsedTx.type === "expense" ? parsedTx.amount : -parsedTx.amount);
-          await db.parties.update(parsedTx.partyId, { balance: newBalance, status: "pending-update" });
-          await queueAction("update", "party", parsedTx.partyId, { ...party, balance: newBalance });
+          const newBalance = party.balance + (editType === "expense" ? amountVal : -amountVal);
+          await db.parties.update(finalPartyId, { balance: newBalance, status: "pending-update" });
+          await queueAction("update", "party", finalPartyId, { ...party, balance: newBalance });
         }
       }
 
       setParsedTx(null);
       setVoiceText("");
-      alert(`Recorded ₹${parsedTx.amount} entry successfully!`);
+      alert(`Recorded ₹${amountVal} entry successfully!`);
       loadData();
     } catch (err) {
       console.error("AI write failed:", err);
@@ -446,12 +566,14 @@ export default function AiMunimPage() {
                 {isListening ? (
                   <div className="flex flex-col items-center gap-2">
                     {/* SVG soundwave indicators */}
-                    <div className="flex items-center gap-1 h-5">
+                    <div className="flex items-center justify-center gap-[3px] h-10 w-full px-6 py-2 bg-slate-900/50 rounded-xl border border-slate-800/40 max-w-[200px] mx-auto shadow-inner">
                       <span className="w-1 bg-brand-emerald h-3 rounded-full animate-bounce" style={{ animationDelay: "0.1s" }}></span>
-                      <span className="w-1 bg-brand-emerald h-5 rounded-full animate-bounce" style={{ animationDelay: "0.2s" }}></span>
-                      <span className="w-1 bg-brand-emerald h-2 rounded-full animate-bounce" style={{ animationDelay: "0.3s" }}></span>
-                      <span className="w-1 bg-brand-emerald h-4 rounded-full animate-bounce" style={{ animationDelay: "0.4s" }}></span>
-                      <span className="w-1 bg-brand-emerald h-3 rounded-full animate-bounce" style={{ animationDelay: "0.5s" }}></span>
+                      <span className="w-1 bg-brand-mint h-7 rounded-full animate-bounce" style={{ animationDelay: "0.2s" }}></span>
+                      <span className="w-1 bg-brand-emerald h-4 rounded-full animate-bounce" style={{ animationDelay: "0.3s" }}></span>
+                      <span className="w-1 bg-brand-mint h-8 rounded-full animate-bounce" style={{ animationDelay: "0.4s" }}></span>
+                      <span className="w-1 bg-brand-emerald h-5 rounded-full animate-bounce" style={{ animationDelay: "0.5s" }}></span>
+                      <span className="w-1 bg-brand-mint h-7 rounded-full animate-bounce" style={{ animationDelay: "0.6s" }}></span>
+                      <span className="w-1 bg-brand-emerald h-3 rounded-full animate-bounce" style={{ animationDelay: "0.7s" }}></span>
                     </div>
                     <p className="text-xs text-brand-mint font-medium italic">Listening to your ledger command...</p>
                   </div>
@@ -491,49 +613,124 @@ export default function AiMunimPage() {
             {/* Analysis Review & Confirm Panel */}
             <div className="rounded-2xl border border-brand-border bg-brand-card/30 p-6 flex flex-col justify-between">
               <div>
-                <h3 className="font-display font-bold text-white text-base border-b border-brand-border pb-3">AI Transaction Blueprint</h3>
+                <h3 className="font-display font-bold text-white text-base border-b border-brand-border pb-3 flex items-center justify-between">
+                  <span>AI Transaction Blueprint</span>
+                  {parsedTx && (
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                      confidenceScore >= 80 
+                        ? "bg-brand-emerald/15 border-brand-emerald/30 text-brand-mint"
+                        : "bg-brand-rose/15 border-brand-rose/30 text-brand-rose"
+                    }`}>
+                      {confidenceScore}% Match
+                    </span>
+                  )}
+                </h3>
                 
                 {parsedTx ? (
                   <div className="mt-4 space-y-4">
-                    <p className="text-xs text-slate-400">Structured interpretation of your text/voice input:</p>
+                    {confidenceScore < 80 && (
+                      <div className="rounded-xl border border-brand-rose/25 bg-brand-rose/10 p-3 text-xs text-brand-rose leading-relaxed font-semibold">
+                        ⚠️ Low confidence parsing ({confidenceScore}%). Please review and correct the fields below carefully before saving.
+                      </div>
+                    )}
+                    <p className="text-xs text-slate-400">Review and edit the fields extracted by the voice parser:</p>
                     
                     <div className="grid grid-cols-2 gap-3 text-xs">
                       
-                      <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-800/40">
-                        <span className="text-[10px] text-slate-500 uppercase font-semibold">Amount</span>
-                        <p className="mt-1 font-bold text-white text-lg">{formatCurrency(parsedTx.amount)}</p>
+                      {/* Amount Input */}
+                      <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-800/40 col-span-2">
+                        <span className="text-[10px] text-slate-500 uppercase font-semibold">Amount (₹)</span>
+                        <input
+                          type="number"
+                          value={editAmount}
+                          onChange={(e) => setEditAmount(e.target.value)}
+                          className="mt-1 font-bold text-white text-lg bg-transparent w-full outline-none focus:border-brand-mint border-b border-transparent py-0.5"
+                        />
                       </div>
 
+                      {/* Flow Type Selector */}
                       <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-800/40">
                         <span className="text-[10px] text-slate-500 uppercase font-semibold">Transaction Flow</span>
-                        <p className={`mt-1.5 font-bold uppercase ${
-                          parsedTx.type === "income" ? "text-brand-mint" : "text-brand-rose"
-                        }`}>
-                          {parsedTx.type === "income" ? "Inflow (+)" : "Outflow (-)"}
-                        </p>
+                        <select
+                          value={editType}
+                          onChange={(e) => {
+                            const newType = e.target.value as "income" | "expense" | "transfer";
+                            setEditType(newType);
+                            // Set category default based on type
+                            setEditCategory(newType === "income" ? "Sales" : newType === "transfer" ? "Transfer" : "Purchase");
+                          }}
+                          className="mt-1.5 font-bold uppercase bg-transparent outline-none text-white w-full border-none p-0 cursor-pointer"
+                        >
+                          <option value="income" className="bg-slate-950 text-brand-mint">Inflow (+)</option>
+                          <option value="expense" className="bg-slate-950 text-brand-rose">Outflow (-)</option>
+                          <option value="transfer" className="bg-slate-950 text-blue-400">Transfer (⇄)</option>
+                        </select>
                       </div>
 
+                      {/* Book Category Selector */}
                       <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-800/40">
                         <span className="text-[10px] text-slate-500 uppercase font-semibold">Book Category</span>
-                        <p className="mt-1.5 font-semibold text-white">{parsedTx.category}</p>
+                        <select
+                          value={editCategory}
+                          onChange={(e) => setEditCategory(e.target.value)}
+                          className="mt-1.5 font-semibold bg-transparent outline-none text-white w-full border-none p-0 cursor-pointer"
+                        >
+                          {categories
+                            .filter((c) => editType === "transfer" || c.type === editType)
+                            .map((c) => (
+                              <option key={c.id} value={c.name} className="bg-slate-950 text-white">{c.name}</option>
+                            ))}
+                          {editType === "transfer" && (
+                            <option value="Transfer" className="bg-slate-950 text-white">Transfer</option>
+                          )}
+                          <option value="Miscellaneous" className="bg-slate-950 text-white">Miscellaneous</option>
+                        </select>
                       </div>
 
+                      {/* Linked Party Input */}
                       <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-800/40">
                         <span className="text-[10px] text-slate-500 uppercase font-semibold">Linked Party</span>
-                        <p className="mt-1.5 font-semibold text-brand-mint">{parsedTx.partyName}</p>
+                        <input
+                          type="text"
+                          value={editPartyName}
+                          onChange={(e) => setEditPartyName(e.target.value)}
+                          placeholder="Cash Account"
+                          className="mt-1.5 font-semibold text-brand-mint bg-transparent w-full outline-none focus:border-brand-mint border-b border-transparent py-0.5"
+                        />
+                        {editPartyName && editPartyName !== "Cash Account" && editPartyName !== "Cash" && !parties.some(p => p.name.toLowerCase() === editPartyName.toLowerCase().trim()) && (
+                          <p className="text-[9px] text-brand-indigo mt-1 font-semibold">✨ Will automatically create new contact</p>
+                        )}
+                      </div>
+
+                      {/* Date Picker */}
+                      <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-800/40">
+                        <span className="text-[10px] text-slate-500 uppercase font-semibold">Date</span>
+                        <input
+                          type="date"
+                          value={editDate}
+                          onChange={(e) => setEditDate(e.target.value)}
+                          className="mt-1.5 font-semibold text-white bg-transparent w-full outline-none border-none p-0 cursor-pointer"
+                        />
                       </div>
 
                     </div>
 
+                    {/* Notes Textarea */}
                     <div className="bg-slate-900/40 p-3 rounded-xl border border-slate-800/40 text-xs">
-                      <span className="text-[10px] text-slate-500 uppercase font-semibold font-mono">Remarks</span>
-                      <p className="mt-1.5 text-slate-300 italic">&quot;{parsedTx.description}&quot;</p>
+                      <span className="text-[10px] text-slate-500 uppercase font-semibold font-mono">Remarks / Notes</span>
+                      <textarea
+                        value={editNotes}
+                        onChange={(e) => setEditNotes(e.target.value)}
+                        rows={2}
+                        className="mt-1.5 text-slate-300 bg-transparent w-full outline-none border-none resize-none p-0"
+                      />
                     </div>
 
                   </div>
                 ) : (
-                  <div className="h-48 flex items-center justify-center text-center text-xs text-slate-500 italic">
-                    Provide voice input or type a bookkeeping phrase to generate a transaction blueprint.
+                  <div className="h-48 flex flex-col items-center justify-center text-center text-xs text-slate-500 italic gap-2">
+                    <Bot size={28} className="text-slate-600 animate-pulse" />
+                    <span>Provide voice input or type a bookkeeping phrase to generate a transaction blueprint.</span>
                   </div>
                 )}
               </div>
@@ -548,7 +745,7 @@ export default function AiMunimPage() {
                   </button>
                   <button
                     onClick={handleConfirmVoiceTx}
-                    className="flex-1 rounded-xl bg-gradient-to-r from-brand-emerald to-brand-mint py-3 text-xs font-bold text-brand-bg shadow-md hover:opacity-90 active:scale-95"
+                    className="flex-1 rounded-xl bg-gradient-to-r from-brand-emerald to-brand-mint py-3 text-xs font-bold text-brand-bg shadow-md hover:opacity-90 active:scale-95 transition-all"
                   >
                     Confirm & Record
                   </button>

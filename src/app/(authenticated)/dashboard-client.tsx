@@ -23,21 +23,24 @@ export default function Dashboard() {
   const [isLoading, setIsLoading] = useState(true);
 
   // 1. Load local records
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const txList = await db.transactions.orderBy("date").reverse().toArray();
-        const partyList = await db.parties.toArray();
-        setTransactions(txList);
-        setParties(partyList);
-      } catch (err) {
-        console.error("Error fetching dashboard data:", err);
-      } finally {
-        setIsLoading(false);
-      }
-    };
+  const fetchData = async () => {
+    try {
+      const txList = await db.transactions.orderBy("date").reverse().toArray();
+      const partyList = await db.parties.toArray();
+      setTransactions(txList);
+      setParties(partyList);
+    } catch (err) {
+      console.error("Error fetching dashboard data:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
+  useEffect(() => {
     fetchData();
+
+    window.addEventListener("munim-db-changed", fetchData);
+    return () => window.removeEventListener("munim-db-changed", fetchData);
   }, []);
 
   // 2. Financial Computations
@@ -72,13 +75,34 @@ export default function Dashboard() {
     }).format(value);
   };
 
-  // 3. Custom SVG Chart calculations (Last 5 Months)
-  // Let's create mock data points based on seeded transactions or fallback monthly data
-  const chartMonths = ["Jan", "Feb", "Mar", "Apr", "May", "Jun"];
-  const incomePoints = [42000, 38000, 52000, 48000, 60000, totalIncome > 0 ? totalIncome : 53000];
-  const expensePoints = [28000, 31000, 29000, 34000, 38000, totalExpense > 0 ? totalExpense : 31700];
+  // 3. Custom SVG Chart calculations (Last 6 Months dynamically from live transactions)
+  const getLast6Months = () => {
+    const months = [];
+    const d = new Date();
+    for (let i = 5; i >= 0; i--) {
+      const targetDate = new Date(d.getFullYear(), d.getMonth() - i, 1);
+      const label = targetDate.toLocaleString("default", { month: "short" });
+      const year = targetDate.getFullYear();
+      const monthIndex = targetDate.getMonth(); // 0-11
+      months.push({ label, year, monthIndex });
+    }
+    return months;
+  };
 
-  const maxVal = Math.max(...incomePoints, ...expensePoints, 10000) * 1.15;
+  const dynamicMonths = getLast6Months();
+  const incomePoints = dynamicMonths.map(m => {
+    return transactions
+      .filter(t => t.type === "income" && new Date(t.date).getMonth() === m.monthIndex && new Date(t.date).getFullYear() === m.year)
+      .reduce((sum, t) => sum + t.amount, 0);
+  });
+  const expensePoints = dynamicMonths.map(m => {
+    return transactions
+      .filter(t => t.type === "expense" && new Date(t.date).getMonth() === m.monthIndex && new Date(t.date).getFullYear() === m.year)
+      .reduce((sum, t) => sum + t.amount, 0);
+  });
+
+  const chartMonths = dynamicMonths.map(m => m.label);
+  const maxVal = Math.max(...incomePoints, ...expensePoints, 1000) * 1.15;
 
   // Helper to convert data values to SVG coordinates (width: 500, height: 200)
   const getSvgCoordinates = (points: number[]) => {
@@ -311,20 +335,30 @@ export default function Dashboard() {
               </div>
               <p className="mt-1 text-xs text-slate-400">Intelligent review of your transactions</p>
 
-              {/* Mock AI Insight Card */}
-              <div className="mt-4 rounded-xl border border-brand-indigo/15 bg-brand-indigo/5 p-4">
-                <p className="text-xs font-semibold text-brand-indigo uppercase tracking-wider">Cash Flow Summary</p>
-                <p className="mt-1 text-xs text-slate-300 leading-relaxed">
-                  Your revenues increased by <span className="text-brand-mint font-semibold">12%</span> this month. Amit Kumar cleared part of his ledger. Total payables are low, resulting in a healthy cash cushion.
-                </p>
-              </div>
-
-              <div className="mt-3 rounded-xl border border-brand-amber/15 bg-brand-amber/5 p-4 flex gap-2.5">
-                <AlertCircle size={15} className="text-brand-amber shrink-0 mt-0.5" />
-                <div className="text-[11px] text-slate-300">
-                  <span className="font-semibold text-brand-amber">Payment Reminder:</span> Rajesh Sharma has an outstanding payment of ₹8,500 due.
+              {transactions.length === 0 ? (
+                <div className="mt-4 rounded-xl border border-brand-indigo/15 bg-brand-indigo/5 p-4">
+                  <p className="text-xs font-semibold text-brand-indigo uppercase tracking-wider">Welcome to Munim</p>
+                  <p className="mt-1 text-xs text-slate-300 leading-relaxed font-sans">
+                    No transactions yet. Add your first transaction to get started.
+                  </p>
                 </div>
-              </div>
+              ) : (
+                <div className="mt-4 rounded-xl border border-brand-indigo/15 bg-brand-indigo/5 p-4">
+                  <p className="text-xs font-semibold text-brand-indigo uppercase tracking-wider">Cash Flow Summary</p>
+                  <p className="mt-1 text-xs text-slate-300 leading-relaxed font-sans">
+                    Your revenues are active. Total income is <span className="text-brand-mint font-semibold">{formatCurrency(totalIncome)}</span> and expense is <span className="text-brand-rose font-semibold">{formatCurrency(totalExpense)}</span>.
+                  </p>
+                </div>
+              )}
+
+              {transactions.length > 0 && parties.some(p => p.balance !== 0) && (
+                <div className="mt-3 rounded-xl border border-brand-amber/15 bg-brand-amber/5 p-4 flex gap-2.5">
+                  <AlertCircle size={15} className="text-brand-amber shrink-0 mt-0.5" />
+                  <div className="text-[11px] text-slate-300 font-sans">
+                    <span className="font-semibold text-brand-amber">Outstanding Balance:</span> Check outstanding balances under the Parties tab.
+                  </div>
+                </div>
+              )}
             </div>
 
             <Link
@@ -362,14 +396,27 @@ export default function Dashboard() {
                 ))}
               </div>
             ) : transactions.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-10 text-center">
-                <p className="text-sm text-slate-500">No transactions recorded yet.</p>
-                <Link
-                  href="/transactions"
-                  className="mt-3 text-xs font-semibold text-brand-mint hover:underline"
-                >
-                  Create your first transaction
-                </Link>
+              <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
+                <p className="text-sm font-semibold text-slate-300">No transactions yet.</p>
+                <p className="text-xs text-slate-400 mt-1 max-w-sm">
+                  No transactions yet. Add your first transaction to get started.
+                </p>
+                <div className="mt-4 flex gap-3">
+                  <Link
+                    href="/ai-munim"
+                    className="flex items-center gap-1.5 rounded-lg bg-brand-emerald/10 border border-brand-emerald/20 px-3 py-1.5 text-xs font-semibold text-brand-mint hover:bg-brand-emerald/20 transition-all"
+                  >
+                    <Mic size={12} />
+                    <span>Voice Input</span>
+                  </Link>
+                  <Link
+                    href="/transactions"
+                    className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-brand-emerald to-brand-mint px-3 py-1.5 text-xs font-semibold text-brand-bg hover:opacity-90 transition-all"
+                  >
+                    <Plus size={12} />
+                    <span>Add Manual</span>
+                  </Link>
+                </div>
               </div>
             ) : (
               <div className="divide-y divide-brand-border">
