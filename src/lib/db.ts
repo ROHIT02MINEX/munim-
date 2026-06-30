@@ -44,14 +44,20 @@ class MunimDatabase extends Dexie {
   transactions!: Table<Transaction>;
   parties!: Table<Party>;
   categories!: Table<Category>;
+  budgets!: Table<any>;
+  reports!: Table<any>;
+  settings!: Table<any>;
   syncQueue!: Table<SyncQueueItem>;
 
   constructor() {
     super("MunimDatabase");
-    this.version(1).stores({
+    this.version(2).stores({
       transactions: "id, amount, type, category, partyId, date, status, createdAt",
       parties: "id, name, type, balance, status",
       categories: "id, name, type",
+      budgets: "id",
+      reports: "id",
+      settings: "id",
       syncQueue: "++id, action, entity, entityId, timestamp",
     });
   }

@@ -10,6 +10,7 @@ create table if not exists public.profiles (
   email text,
   avatar_url text,
   phone text,
+  settings jsonb not null default '{}'::jsonb,
   created_at timestamp with time zone default now(),
   updated_at timestamp with time zone default now()
 );
@@ -127,6 +128,13 @@ create table if not exists public.reports (
   updated_at timestamp with time zone default now()
 );
 
+-- Indexes for user tables
+create index if not exists transactions_user_id_idx on public.transactions(user_id);
+create index if not exists categories_user_id_idx on public.categories(user_id);
+create index if not exists parties_user_id_idx on public.parties(user_id);
+create index if not exists budgets_user_id_idx on public.budgets(user_id);
+create index if not exists reports_user_id_idx on public.reports(user_id);
+
 -- 6. Set up RLS + updated_at triggers + grants for all user data tables
 do $$
 declare
@@ -143,28 +151,28 @@ begin
 
     execute format('alter table public.%I enable row level security', table_name);
 
-    execute format('drop policy if exists %L on public.%I', table_name || '_select_own', table_name);
+    execute format('drop policy if exists %I on public.%I', table_name || '_select_own', table_name);
     execute format(
       'create policy %I on public.%I for select to authenticated using ((select auth.uid()) = user_id)',
       table_name || '_select_own',
       table_name
     );
 
-    execute format('drop policy if exists %L on public.%I', table_name || '_insert_own', table_name);
+    execute format('drop policy if exists %I on public.%I', table_name || '_insert_own', table_name);
     execute format(
       'create policy %I on public.%I for insert to authenticated with check ((select auth.uid()) = user_id)',
       table_name || '_insert_own',
       table_name
     );
 
-    execute format('drop policy if exists %L on public.%I', table_name || '_update_own', table_name);
+    execute format('drop policy if exists %I on public.%I', table_name || '_update_own', table_name);
     execute format(
       'create policy %I on public.%I for update to authenticated using ((select auth.uid()) = user_id) with check ((select auth.uid()) = user_id)',
       table_name || '_update_own',
       table_name
     );
 
-    execute format('drop policy if exists %L on public.%I', table_name || '_delete_own', table_name);
+    execute format('drop policy if exists %I on public.%I', table_name || '_delete_own', table_name);
     execute format(
       'create policy %I on public.%I for delete to authenticated using ((select auth.uid()) = user_id)',
       table_name || '_delete_own',

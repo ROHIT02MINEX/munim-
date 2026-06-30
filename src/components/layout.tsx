@@ -17,7 +17,7 @@ import {
   Sparkles
 } from "lucide-react";
 import { useSync } from "@/lib/sync";
-import { seedDatabase } from "@/lib/mockData";
+import { seedDatabase, defaultCategories } from "@/lib/mockData";
 import { createClient } from "@/lib/supabase/client";
 import { db } from "@/lib/db";
 
@@ -59,6 +59,10 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
             await Promise.all([
               db.transactions.clear(),
               db.parties.clear(),
+              db.categories.clear(),
+              db.budgets.clear(),
+              db.reports.clear(),
+              db.settings.clear(),
               db.syncQueue.clear()
             ]);
           }
@@ -72,24 +76,66 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
             }
           }
 
-          // Sync down user's existing records from Supabase tables
-          const [txRes, ptRes] = await Promise.all([
+          // Sync down all user data from Supabase tables
+          const [profileRes, txRes, ptRes, catRes, budgetRes, reportRes] = await Promise.all([
+            supabase.from("profiles").select("*").eq("id", user.id).maybeSingle(),
             supabase.from("transactions").select("*"),
-            supabase.from("parties").select("*")
+            supabase.from("parties").select("*"),
+            supabase.from("categories").select("*"),
+            supabase.from("budgets").select("*"),
+            supabase.from("reports").select("*")
           ]);
 
           // Save unsynced local data first to prevent overwriting
           const unsyncedTxs = await db.transactions.filter(t => t.status !== "synced").toArray();
           const unsyncedPts = await db.parties.filter(p => p.status !== "synced").toArray();
 
-          // Clear database to merge fresh data
+          // Clear database tables to merge fresh data from Supabase
           await Promise.all([
             db.transactions.clear(),
-            db.parties.clear()
+            db.parties.clear(),
+            db.categories.clear(),
+            db.budgets.clear(),
+            db.reports.clear(),
+            db.settings.clear()
           ]);
 
-          // Reseed default categories
-          await seedDatabase();
+          // Initialize Categories (Restore from Supabase OR Seed Default Categories if first login)
+          if (catRes.data && catRes.data.length > 0) {
+            const remoteCats = catRes.data.map(item => ({
+              id: item.id,
+              ...(item.payload as any)
+            }));
+            await db.categories.bulkPut(remoteCats);
+          } else {
+            // First login: seed default categories locally and save them to Supabase
+            await seedDatabase();
+            if (navigator.onLine) {
+              const insertCats = defaultCategories.map(cat => ({
+                id: cat.id,
+                user_id: user.id,
+                payload: { id: cat.id, name: cat.name, type: cat.type, icon: cat.icon, color: cat.color }
+              }));
+              if (insertCats.length > 0) {
+                await supabase.from("categories").insert(insertCats);
+              }
+            }
+          }
+
+          // Initialize Settings (Restore from Profile OR Set Defaults if first login)
+          const rawSettings = profileRes.data?.settings;
+          const remoteSettings = (rawSettings && typeof rawSettings === "object" && !Array.isArray(rawSettings)) 
+            ? (rawSettings as Record<string, any>) 
+            : null;
+          if (remoteSettings && Object.keys(remoteSettings).length > 0) {
+            await db.settings.put({ id: "current_settings", ...remoteSettings });
+          } else {
+            const defaultSettings = { currency: "INR", theme: "dark", language: "en" };
+            await db.settings.put({ id: "current_settings", ...defaultSettings });
+            if (navigator.onLine) {
+              await supabase.from("profiles").update({ settings: defaultSettings }).eq("id", user.id);
+            }
+          }
 
           // Put synced transactions from Supabase
           if (txRes.data && txRes.data.length > 0) {
@@ -109,6 +155,24 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
               status: "synced" as const
             }));
             await db.parties.bulkPut(localPts);
+          }
+
+          // Put synced budgets from Supabase
+          if (budgetRes.data && budgetRes.data.length > 0) {
+            const localBudgets = budgetRes.data.map(item => ({
+              id: item.id,
+              ...(item.payload as any)
+            }));
+            await db.budgets.bulkPut(localBudgets);
+          }
+
+          // Put synced reports from Supabase
+          if (reportRes.data && reportRes.data.length > 0) {
+            const localReports = reportRes.data.map(item => ({
+              id: item.id,
+              ...(item.payload as any)
+            }));
+            await db.reports.bulkPut(localReports);
           }
 
           // Re-apply local unsynced edits/inserts
@@ -180,6 +244,10 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     await Promise.all([
       db.transactions.clear(),
       db.parties.clear(),
+      db.categories.clear(),
+      db.budgets.clear(),
+      db.reports.clear(),
+      db.settings.clear(),
       db.syncQueue.clear()
     ]);
     router.refresh();
